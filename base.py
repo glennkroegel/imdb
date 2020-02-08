@@ -3,7 +3,7 @@ created_by: Glenn Kroegel
 date: 31 January 2020
 
 https://stats.stackexchange.com/questions/421935/what-exactly-are-keys-queries-and-values-in-attention-mechanisms
-https://github.com/mttk/rnn-classifier/blob/master/model.py
+    https://github.com/mttk/rnn-classifier/blob/master/model.py
 
 '''
 
@@ -25,7 +25,7 @@ import shutil
 
 from utils import count_parameters, accuracy
 
-NUM_EPOCHS = 10
+NUM_EPOCHS = 30
 
 
 #################################################################################################
@@ -62,11 +62,11 @@ itos = list(stoi.keys())
 TEXT.vocab.stoi = stoi
 TEXT.vocab.itos = itos
 
-train_iter, val_iter = BucketIterator.splits((trn, cv), batch_sizes=(6, 6), device=device, 
-sort_key=lambda x: len(x.text), sort_within_batch=False, repeat=False)
+train_iter, val_iter = BucketIterator.splits((trn, cv), batch_sizes=(8, 8), device=device, 
+sort_key=lambda x: len(x.text), sort_within_batch=True, repeat=False)
 
 vocab_sz = len(tokenizer.vocab)
-hidden_sz = 24
+hidden_sz = 50
 
 class Attention(nn.Module):
     def __init__(self, query_dim):
@@ -83,22 +83,23 @@ class Attention(nn.Module):
         query = query.unsqueeze(1)
         keys = keys.view(bs, -1, T)
         e = torch.bmm(query, keys)
-        import pdb; pdb.set_trace()
         alpha = F.softmax(e.mul_(self.scale), dim=-1)
         values = values.transpose(0, 1)
         attn = torch.bmm(alpha, values).squeeze()
         return alpha, attn
 
-class BaseLineRNN(nn.Module):
+class RNNAttn(nn.Module):
     def __init__(self, emb_dim=10, rnn_layers=1):
-        super(BaseLineRNN, self).__init__()
+        super(RNNAttn, self).__init__()
         self.emb_dim = emb_dim
         self.rnn_layers = rnn_layers
 
         self.emb = nn.Embedding(vocab_sz, emb_dim)
         self.rnn = nn.GRU(input_size=10, hidden_size=hidden_sz, num_layers=self.rnn_layers)
         self.attn = Attention(query_dim=hidden_sz)
+        self.l_proj = nn.Linear(hidden_sz, hidden_sz)
         self.l_out = nn.Linear(hidden_sz, 1)
+        self.act = nn.ReLU()
 
     def init_hidden(self, batch_sz):
         ''' (num_layers, batch_size, hidden_size)'''
@@ -113,8 +114,95 @@ class BaseLineRNN(nn.Module):
         h0 = self.init_hidden(bs)
         outp, hidden = self.rnn(x, h0)
         hidden = hidden.view(bs, -1)
-        _, attn = self.attn(query=hidden, keys=outp, values=outp)
-        x = self.l_out(attn)
+        alpha, attn = self.attn(query=hidden, keys=outp, values=outp)
+        x = self.act(self.l_proj(attn))
+        x = self.l_out(x)
+        x = torch.sigmoid(x)
+        return x, alpha
+
+class BaseLineRNN(nn.Module):
+    def __init__(self, emb_dim=10, rnn_layers=1):
+        super(BaseLineRNN, self).__init__()
+        self.emb_dim = emb_dim
+        self.rnn_layers = rnn_layers
+
+        self.emb = nn.Embedding(vocab_sz, emb_dim)
+        self.rnn = nn.GRU(input_size=10, hidden_size=hidden_sz, num_layers=self.rnn_layers)
+        self.l_proj = nn.Linear(hidden_sz, hidden_sz)
+        self.l_out = nn.Linear(hidden_sz, 1)
+        self.act = nn.ReLU()
+
+    def init_hidden(self, batch_sz):
+        ''' (num_layers, batch_size, hidden_size)'''
+        hidden = torch.zeros(self.rnn_layers, batch_sz, hidden_sz)
+        return hidden
+
+    def forward(self, x):
+        bs = x.size(0)
+        sl = x.size(1)
+        x = self.emb(x)
+        x = x.view(sl, bs, -1)
+        # h0 = self.init_hidden(bs)
+        outp, hidden = self.rnn(x)
+        hidden = hidden.view(bs, -1)
+        x = self.act(self.l_proj(hidden))
+        x = self.l_out(x)
+        x = torch.sigmoid(x)
+        return x
+
+###########################################################################
+
+# CONV models
+
+class BaseConv(nn.Module):
+    def __init__(self, emb_dim=10):
+        super(BaseConv, self).__init__()
+        self.emb_dim = emb_dim
+
+        self.emb = nn.Embedding(vocab_sz, emb_dim)
+        self.conv1 = nn.Conv1d(emb_dim, emb_dim, 3, padding=1)
+        self.pool = nn.AdaptiveAvgPool1d(30)
+        self.l_out = nn.Linear(300, 1)
+        self.act = nn.ReLU()
+
+    def forward(self, x):
+        bs = x.size(0)
+        sl = x.size(1)
+        x = self.emb(x)
+        x = x.view(bs, self.emb_dim, -1)
+        x = self.act(self.conv1(x))
+        x = self.pool(x)
+        x = x.view(bs, -1)
+        x = self.l_out(x)
+        x = torch.sigmoid(x)
+        return x
+
+class ConvAttn(nn.Module):
+    def __init__(self, emb_dim=10):
+        super(ConvAttn, self).__init__()
+        self.emb_dim = emb_dim
+
+        self.emb = nn.Embedding(vocab_sz, emb_dim)
+        self.conv1 = nn.Conv1d(emb_dim, emb_dim, 3, padding=1)
+        self.attn = Attention(emb_dim)
+        self.l_out = nn.Linear(emb_dim, 1)
+        self.act = nn.ReLU()
+        self.norm1 = nn.LayerNorm((10,), elementwise_affine=True)
+        self.norm2 = nn.LayerNorm((10,), elementwise_affine=True)
+
+    def forward(self, x):
+        bs = x.size(0)
+        sl = x.size(1)
+        x = self.emb(x)
+        x = self.norm1(x)
+        x = x.view(bs, self.emb_dim, -1)
+        x = self.act(self.conv1(x))
+        x = x.view(sl, bs, -1)
+        q = x[0].view(bs, -1)
+        alpha, attn = self.attn(query=q, keys=x, values=x)
+        x = attn.view(bs, -1)
+        x = self.norm2(x)
+        x = self.l_out(x)
         x = torch.sigmoid(x)
         return x
 
@@ -128,9 +216,9 @@ def save_checkpoint(state, is_best, filename='checkpoint_simple.pth.tar'):
 class Learner():
     '''Training loop'''
     def __init__(self, epochs=NUM_EPOCHS):
-        self.model = BaseLineRNN().to(device)
+        self.model = ConvAttn().to(device)
         self.criterion = nn.BCELoss()
-        self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=1e-4, weight_decay=1e-6)
+        self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=1e-3, weight_decay=1e-6)
         self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(self.optimizer, T_max=20, eta_min=1e-5)
         self.epochs = epochs
         self.best_loss = np.inf
@@ -157,7 +245,6 @@ class Learner():
         for i, data in enumerate(loader):
             if i % 1 == 0:
                 pass
-                # print(i)
             x = data.text
             targets = data.label.float()
             # targets = targets.to(device)

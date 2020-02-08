@@ -40,10 +40,11 @@ tokenize = lambda x: tokenizer.tokenize(x)
 
 TEXT = Field(sequential=True, 
              tokenize=tokenize, 
-             use_vocab=True, 
+             use_vocab=True,
+             init_token=tokenizer.cls_token,
              pad_token=tokenizer.pad_token, 
              unk_token=tokenizer.unk_token, 
-             pad_first=True, 
+             pad_first=False, 
              batch_first=True)
 
 LABEL = Field(use_vocab=False, sequential=False)
@@ -73,25 +74,25 @@ class DistilBert(nn.Module):
         x = self.clf(x)[0]
         return x
 
-
-class Head(nn.Module):
+class ShallowBert(nn.Module):
     def __init__(self):
-        super(Head, self).__init__()
-        pass
+        super(ShallowBert, self).__init__()
+        self.clf = DistilBertModel.from_pretrained(weights)
 
     def forward(self, x):
-        x = x.sum(axis=1)
-        x = x/x.norm()
+        x = self.clf(x)[0]
         return x
 
 class Encoder(nn.Module):
     def __init__(self):
         super(Encoder, self).__init__()
-        self.enc = nn.Sequential(DistilBert(),
-        Head(), nn.Linear(768, 1), nn.Sigmoid())
+        self.enc = DistilBert()
+        self.l_out = nn.Linear(768, 1)
 
     def forward(self, x):
         x = self.enc(x)
+        x_cls = x[:, 0]
+        x = torch.sigmoid(self.l_out(x_cls))
         return x
 
 ###########################################################################
