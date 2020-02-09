@@ -2,10 +2,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torchtext
-from loading import batch_size_fn, MyIterator
-from utils import tokenize_sentence, tokenizer, accuracy
 from tqdm import tqdm
 import shutil
+import math
 
 # https://towardsdatascience.com/how-to-code-the-transformer-in-pytorch-24db27c8f9ec
 
@@ -25,17 +24,17 @@ class PositionalEncoding(nn.Module):
         self.max_len = max_len
         self.dim = dim
         pe = torch.zeros(max_len, dim)
-        for pos in torch.arange(0, max_len):
-            for i in torch.arange(0, dim, 2):
-                pe[pos, i] = torch.sin(pos/(10000**(2*i/dim)))
-                pe[pos, i+1] = torch.cos(pos/(10000**(2*(i+1)/dim)))
+        for pos in range(0, max_len):
+            for i in range(0, dim, 2):
+                pe[pos, i] = math.sin(pos/(10000**(2*i/dim)))
+                pe[pos, i+1] = math.cos(pos/(10000**(2*(i+1)/dim)))
         pe = pe.unsqueeze(0)
         self.register_buffer('pe', pe)
 
     def forward(self, x):
         bs = x.size(0)
         sl = x.size(1)
-        x = self.pos * torch.sqrt(self.dim)
+        x = x * math.sqrt(self.dim)
         x = x + self.pe[:, :sl]
         return x
 

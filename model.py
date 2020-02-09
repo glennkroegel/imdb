@@ -25,7 +25,7 @@ NUM_EPOCHS = 10
 #################################################################################################
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-status_properties = ['loss']
+status_properties = ['loss', 'accuracy']
 
 #################################################################################################
 
@@ -140,7 +140,9 @@ class Learner():
             # targets = targets.to(device)
             preds = model(x)
             loss = criterion(preds.view(-1), targets.view(-1))
+            acc = accuracy(preds.view(-1), targets.view(-1))
             props['loss'] += loss.item()
+            props['accuracy'] += acc.item()
             if training:
                 optimizer.zero_grad()
                 if i % 20 == 0:

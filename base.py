@@ -3,8 +3,7 @@ created_by: Glenn Kroegel
 date: 31 January 2020
 
 https://stats.stackexchange.com/questions/421935/what-exactly-are-keys-queries-and-values-in-attention-mechanisms
-    https://github.com/mttk/rnn-classifier/blob/master/model.py
-
+https://github.com/mttk/rnn-classifier/blob/master/model.py
 '''
 
 import pandas as pd
@@ -25,8 +24,9 @@ import shutil
 
 from utils import count_parameters, accuracy
 
-NUM_EPOCHS = 30
+NUM_EPOCHS = 100
 
+# TODO: Add mask for padding
 
 #################################################################################################
 
@@ -56,16 +56,17 @@ datafields = [('text', TEXT), ('label', LABEL)]
 trn, cv = TabularDataset.splits(path='.', train='train.csv', validation='cv.csv', 
 format='csv', skip_header=True, fields=datafields)
 
-TEXT.build_vocab()
+TEXT.build_vocab(trn, cv)
 stoi = dict(tokenizer.vocab)
 itos = list(stoi.keys())
 TEXT.vocab.stoi = stoi
 TEXT.vocab.itos = itos
 
-train_iter, val_iter = BucketIterator.splits((trn, cv), batch_sizes=(8, 8), device=device, 
+train_iter, val_iter = BucketIterator.splits((trn, cv), batch_sizes=(64, 64), device=device, 
 sort_key=lambda x: len(x.text), sort_within_batch=True, repeat=False)
 
 vocab_sz = len(tokenizer.vocab)
+print(vocab_sz)
 hidden_sz = 50
 
 class Attention(nn.Module):
@@ -73,7 +74,7 @@ class Attention(nn.Module):
         super(Attention, self).__init__()
         self.scale = 1/math.sqrt(query_dim)
 
-    def forward(self, query, keys, values):
+    def forward(self, query, keys, values, mask=None):
         # Query = [BxQ]
         # Keys = [TxBxK]
         # Values = [TxBxV]
@@ -83,6 +84,8 @@ class Attention(nn.Module):
         query = query.unsqueeze(1)
         keys = keys.view(bs, -1, T)
         e = torch.bmm(query, keys)
+        if mask is not None:
+            e.masked_fill_(mask.unsqueeze(1), value=0)
         alpha = F.softmax(e.mul_(self.scale), dim=-1)
         values = values.transpose(0, 1)
         attn = torch.bmm(alpha, values).squeeze()
@@ -109,12 +112,13 @@ class RNNAttn(nn.Module):
     def forward(self, x):
         bs = x.size(0)
         sl = x.size(1)
+        mask = (x == tokenizer.pad_token_id)
         x = self.emb(x)
         x = x.view(sl, bs, -1)
         h0 = self.init_hidden(bs)
-        outp, hidden = self.rnn(x, h0)
+        outp, hidden = self.rnn(x, h0.to(device))
         hidden = hidden.view(bs, -1)
-        alpha, attn = self.attn(query=hidden, keys=outp, values=outp)
+        alpha, attn = self.attn(query=hidden, keys=outp, values=outp, mask=mask)
         x = self.act(self.l_proj(attn))
         x = self.l_out(x)
         x = torch.sigmoid(x)
@@ -155,7 +159,7 @@ class BaseLineRNN(nn.Module):
 # CONV models
 
 class BaseConv(nn.Module):
-    def __init__(self, emb_dim=10):
+    def __init__(self, emb_dim=30):
         super(BaseConv, self).__init__()
         self.emb_dim = emb_dim
 
@@ -178,30 +182,27 @@ class BaseConv(nn.Module):
         return x
 
 class ConvAttn(nn.Module):
-    def __init__(self, emb_dim=10):
+    def __init__(self, emb_dim=30):
         super(ConvAttn, self).__init__()
         self.emb_dim = emb_dim
-
         self.emb = nn.Embedding(vocab_sz, emb_dim)
-        self.conv1 = nn.Conv1d(emb_dim, emb_dim, 3, padding=1)
+        self.conv1 = nn.Conv1d(emb_dim, emb_dim, 3, padding=1, bias=False)
         self.attn = Attention(emb_dim)
-        self.l_out = nn.Linear(emb_dim, 1)
+        self.l_out = nn.Linear(emb_dim, 1, bias=False)
+        self.bn = nn.BatchNorm1d(emb_dim)
         self.act = nn.ReLU()
-        self.norm1 = nn.LayerNorm((10,), elementwise_affine=True)
-        self.norm2 = nn.LayerNorm((10,), elementwise_affine=True)
 
     def forward(self, x):
         bs = x.size(0)
         sl = x.size(1)
+        mask = (x == tokenizer.pad_token_id)
         x = self.emb(x)
-        x = self.norm1(x)
         x = x.view(bs, self.emb_dim, -1)
         x = self.act(self.conv1(x))
         x = x.view(sl, bs, -1)
         q = x[0].view(bs, -1)
-        alpha, attn = self.attn(query=q, keys=x, values=x)
-        x = attn.view(bs, -1)
-        x = self.norm2(x)
+        alpha, attn = self.attn(query=q, keys=x, values=x, mask=mask)
+        x = self.bn(attn)
         x = self.l_out(x)
         x = torch.sigmoid(x)
         return x
@@ -218,8 +219,8 @@ class Learner():
     def __init__(self, epochs=NUM_EPOCHS):
         self.model = ConvAttn().to(device)
         self.criterion = nn.BCELoss()
-        self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=1e-3, weight_decay=1e-6)
-        self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(self.optimizer, T_max=20, eta_min=1e-5)
+        self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=1e-2)
+        self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(self.optimizer, T_max=20, eta_min=1e-4)
         self.epochs = epochs
         self.best_loss = np.inf
 
