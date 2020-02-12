@@ -6,6 +6,7 @@ import torch.nn.functional as F
 import six
 import json
 import os
+from torchtext import datasets, data
 from collections import defaultdict
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -17,6 +18,18 @@ def one_hot(labels, num_classes):
     y = torch.eye(num_classes)
     y = y[labels]
     return y
+
+def make_imdb(batch_size=128, device=-1, vectors=None):
+  TEXT = data.Field(include_lengths=False, lower=True)
+  LABEL = data.LabelField()
+  train, test = datasets.IMDB.splits(TEXT, LABEL)
+
+  TEXT.build_vocab(train, test, vectors=vectors, max_size=10000) 
+  LABEL.build_vocab(train, test)
+  train_iter, test_iter = data.BucketIterator.splits(
+              (train, test), batch_size=batch_size, device=device, repeat=False)
+
+  return train_iter, test_iter, TEXT, LABEL
 
 # def accuracy(input, targs):
 #     "Compute accuracy with `targs` when `input` is bs * n_classes."
