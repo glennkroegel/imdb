@@ -7,6 +7,7 @@ import six
 import json
 import os
 from torchtext import datasets, data
+from torchtext.data import Field, BucketIterator, TabularDataset
 from collections import defaultdict
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -19,15 +20,35 @@ def one_hot(labels, num_classes):
     y = y[labels]
     return y
 
+def length_collate(batch):
+    pass
+
 def make_imdb(batch_size=128, device=-1, vectors=None):
   TEXT = data.Field(include_lengths=False, lower=True)
   LABEL = data.LabelField()
   train, test = datasets.IMDB.splits(TEXT, LABEL)
+  
+  train = train[:2000]
+  test = test[:500]
 
   TEXT.build_vocab(train, test, vectors=vectors, max_size=10000) 
   LABEL.build_vocab(train, test)
   train_iter, test_iter = data.BucketIterator.splits(
               (train, test), batch_size=batch_size, device=device, repeat=False)
+
+  return train_iter, test_iter, TEXT, LABEL
+
+def make_small_imdb(batch_size=32, device=-1, vectors=None):
+  TEXT = data.Field(include_lengths=False, lower=True)
+  LABEL = data.LabelField()
+  datafields = [('text', TEXT), ('label', LABEL)]
+  train, test = TabularDataset.splits(path='.', train='train.csv', validation='cv.csv', 
+  format='csv', skip_header=True, fields=datafields)
+
+  TEXT.build_vocab(train, test, vectors=vectors, max_size=3000) 
+  LABEL.build_vocab(train, test)
+  train_iter, test_iter = BucketIterator.splits((train, test), batch_sizes=(64, 32), device=device, 
+  sort_key=lambda x: len(x.text), sort_within_batch=False, repeat=False)
 
   return train_iter, test_iter, TEXT, LABEL
 
@@ -40,6 +61,12 @@ def make_imdb(batch_size=128, device=-1, vectors=None):
 #     return acc
 
 def accuracy(inputs, targets):
+    with torch.no_grad():
+        pred = inputs.detach().argmax(dim=1)
+        acc = (pred == targets).float().mean()
+    return acc
+
+def bce_accuracy(inputs, targets):
     with torch.no_grad():
         inps = inputs.detach().view(-1)
         targs = targets.detach().view(-1)
